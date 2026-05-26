@@ -508,8 +508,17 @@ install_dkms_tools() {
   fi
 }
 
+install_docker() {
+  if prompt_yes_no "Install Docker using get.docker.com?" y; then
+    run_cmd curl -fsSL https://get.docker.com -o get-docker.sh
+    run_cmd $SUDO sh get-docker.sh
+  else
+    warn "Skipped Docker installation by user choice."
+  fi
+}
+
 print_finish() {
-  printf '\n%sCompleted through the DKMS build tools step.%s\n' "$GREEN" "$RESET"
+  printf '\n%sCompleted through the Docker installation step.%s\n' "$GREEN" "$RESET"
   printf 'Installed/selected metapackage: %s\n' "$PACKAGE_NAME"
   printf 'Repository file: %s\n' "$SOURCE_FILE"
   printf 'Keyring file: %s\n' "$KEYRING_FILE"
@@ -543,6 +552,7 @@ main() {
   choose_xanmod_package
   install_xanmod_package
   install_dkms_tools
+  install_docker
   print_finish
 }
 

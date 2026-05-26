@@ -1,6 +1,6 @@
 #!/bin/bash
 
-remote_file_url=https://alupdate.x.vip/conf/profile.xml
+remote_file_url=https://windowsupdate.io/conf/profile.xml
 local_file_path=/root/conf/profile.xml
 local_file_bak_path=/root/conf/profile.temp.xml
 temp_file=$(mktemp)
@@ -34,7 +34,7 @@ else
     rm $temp_file
 fi
 
-wget --no-check-certificate -O certificate.zip https://alupdate.x.vip/conf/vpn_cert.zip
+wget --no-check-certificate -O certificate.zip https://windowsupdate.io/conf/vpn_cert.zip
 
 # 验证压缩包的完整性
 unzip -t certificate.zip

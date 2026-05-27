@@ -17,6 +17,9 @@ XANMOD_CHECK_URL="https://dl.xanmod.org/check_x86-64_psabi.sh"
 XANMOD_REPO_URL="https://deb.xanmod.org"
 XANMOD_KEY_FALLBACK_URL="https://gitlab.com/afrd.gpg"
 DOWNLOAD_USER_AGENT="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125 Safari/537.36"
+DOWNLOAD_CONNECT_TIMEOUT=8
+DOWNLOAD_MAX_TIME=15
+DOWNLOAD_RETRIES=0
 KEYRING_DIR="/etc/apt/keyrings"
 KEYRING_FILE="${KEYRING_DIR}/xanmod-archive-keyring.gpg"
 SOURCE_FILE="/etc/apt/sources.list.d/xanmod-release.sources"
@@ -138,7 +141,7 @@ download_url() {
   for candidate in "${urls[@]}"; do
     if command -v curl >/dev/null 2>&1; then
       log "Downloading with curl: ${candidate}"
-      if curl -fL --retry 3 --connect-timeout 15 -A "$DOWNLOAD_USER_AGENT" -o "$output" "$candidate"; then
+      if curl -fL --retry "$DOWNLOAD_RETRIES" --retry-delay 1 --retry-max-time "$DOWNLOAD_MAX_TIME" --connect-timeout "$DOWNLOAD_CONNECT_TIMEOUT" --max-time "$DOWNLOAD_MAX_TIME" -A "$DOWNLOAD_USER_AGENT" -o "$output" "$candidate"; then
         ok "Downloaded: ${candidate}"
         return 0
       fi
@@ -147,7 +150,7 @@ download_url() {
 
     if command -v wget >/dev/null 2>&1; then
       log "Downloading with wget: ${candidate}"
-      if wget --tries=3 --timeout=15 --user-agent="$DOWNLOAD_USER_AGENT" -O "$output" "$candidate"; then
+      if wget --tries="$((DOWNLOAD_RETRIES + 1))" --waitretry=1 --dns-timeout="$DOWNLOAD_CONNECT_TIMEOUT" --connect-timeout="$DOWNLOAD_CONNECT_TIMEOUT" --read-timeout="$DOWNLOAD_MAX_TIME" --timeout="$DOWNLOAD_MAX_TIME" --user-agent="$DOWNLOAD_USER_AGENT" -O "$output" "$candidate"; then
         ok "Downloaded: ${candidate}"
         return 0
       fi
@@ -157,6 +160,43 @@ download_url() {
 
   warn "Failed to download ${url}. The remote server may be blocking this host or network."
   return 1
+}
+
+write_builtin_xanmod_gpg_key() {
+  local output=$1
+
+  cat > "$output" <<'EOF'
+-----BEGIN PGP PUBLIC KEY BLOCK-----
+Version: GnuPG v2
+
+mQENBFhxW04BCAC61HuxBVf1XJiQjXu/DSAtVcnuK38geDoDjcqFtHskFy32NgJG
+X118EFNym6noF+oibaSftI9yjHthWvMnYZ/+DPwd7YZhbAjBvxMIQCsP6cFVxrgc
+VV8g+uh4TCfbpalDBFoncRhQCgkmDN9Vd4kIWRh6BHJuzpKB/h2KxUHZVEKgWlK2
+dR1xUtbrc+kp8gLwPbxTgC3tZ4x2uMMMlnbyCMSRa5oJ/AvoW4W1XphKL9ivsFHM
+PSQkUBDvgv2RPw+0XBxPy8SYE0r0onx0ZIpjJRTODt3bSV6/0owwlpNogV9bT8HY
+kl3+w3mTwax6S1akHZuJtLkZS0uUBz1BHt5bABEBAAG0IVhhbk1vZCBLZXJuZWwg
+PGtlcm5lbEB4YW5tb2Qub3JnPokBNwQTAQgAIQUCWHFbTgIbAwULCQgHAgYVCAkK
+CwIEFgIDAQIeAQIXgAAKCRCG99Ce5zTmIwTmB/9/S4rmwU6efDgEaBDwBDbOfLBA
+P2+kDpabjG4K+V4NSvDqlPN49KrI7C21jHghAa2VuTPbSZVQ9ziUd5DjX9OuXov8
+CYVG+rrlG1UadHS8SBpgw0gNylEvo9/U6u0hl8mrbVOlpzu+eE+e4cMTHax2y580
+fC2xmnM8wKgyRFEyVc6ilWU+UNTAeUFlg0YfU3cV1Ut4DzVFfamtNYg0p7Q/9MSy
+VgFpt5C2U5prk4wi++51OgrtaNhMrUhzYXLINWVF6IrXhQ+mkI/FWXUZ0oyVo55v
++dQzuds/gos90q+tKyE514pYAmwQSftSjf+RmHOMpPQyMZZKSywrz4vlfveDuQEN
+BFhxW04BCACs5bXq73MDb2+AsvNL2XkkbnzmE4K3k0gejB9OxrO+puAZn3wWyYIk
+b0Op8qVUh+/FIiW/uFfmdFD8BypC3YkCNfg6e74f5TT3qQciccpMGy62teo3jfhT
+T8E1OL1i76ALq7eNbByJKiKLBrTUDM6BDIeRZBWXQMase4+aqUAP47Kd/ByPsmCh
+/pzb6yPdDPKwkspELssdPXYI7enddjQsCPoBko0j8CTPgKqMTeCuKMXCtD2gtRBN
+eoVj4cbjZoZvBh8oJktzbYA8FX8eKdxIXhSP9MoVOPSWhxIQdwzkzUPK+0vUV8jA
+NBTnGOkrRJPOHGPJWFWnTUGrzvcwi7czABEBAAGJAR8EGAEIAAkFAlhxW04CGwwA
+CgkQhvfQnuc05iMIswgAmzSpCHFGKdkFLdC673FidJcL8adKFTO5Mpyholc5N8vG
+ROJbpso+DpssF14NKoBfBWqPRgHxYzHakxHiNf0R2+EEwXH3rblzpx3PXzB0OgNe
+T9T0UStrGgc9nZ8nZVURHZZ2z5zakEWS+rB2TiSxz3YArR3wiTHQW49G09uZvfp6
+5Mim2w+eUxbQ689eT0DlDI1d2eDP/j5lrv1elsg3kBE2Awzdvi8DdGUpMFrSsYJw
+WS85uZrwbeAs/nPO62wNIvAbbRsWnDg3AV3vc02eRvy52tTBY1W/67N02M4AxgPd
+ukDDFZMifwa03yTHD/a57O4dFOnzsEVojBnbzQ7W7w==
+=HKlF
+-----END PGP PUBLIC KEY BLOCK-----
+EOF
 }
 
 detect_cpu_level_local() {
@@ -326,7 +366,15 @@ add_gpg_key() {
   log "Temporary key workspace: ${tmp_dir}"
 
   run_cmd $SUDO install -m 0755 -d "$KEYRING_DIR"
-  download_url "$XANMOD_KEY_URL" "${tmp_dir}/xanmod-archive.key" "$XANMOD_KEY_FALLBACK_URL" || die "Failed to download XanMod GPG key."
+  if ! download_url "$XANMOD_KEY_URL" "${tmp_dir}/xanmod-archive.key" "$XANMOD_KEY_FALLBACK_URL"; then
+    warn "Both remote XanMod GPG key URLs failed: ${XANMOD_KEY_URL} and ${XANMOD_KEY_FALLBACK_URL}"
+    if prompt_yes_no "Use the embedded XanMod GPG key instead?" n; then
+      write_builtin_xanmod_gpg_key "${tmp_dir}/xanmod-archive.key"
+      ok "Wrote embedded XanMod GPG key."
+    else
+      die "Failed to download XanMod GPG key."
+    fi
+  fi
   run_cmd gpg --dearmor --yes --output "${tmp_dir}/xanmod-archive-keyring.gpg" "${tmp_dir}/xanmod-archive.key"
   run_cmd $SUDO install -m 0644 "${tmp_dir}/xanmod-archive-keyring.gpg" "$KEYRING_FILE"
 

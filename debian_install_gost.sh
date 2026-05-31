@@ -270,11 +270,35 @@ parse_release_tag() {
   sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$json_file" | head -n 1
 }
 
+is_ignored_prerelease_tag() {
+  case "$1" in
+    v3.2.7-nightly.20260529|v3.2.7-nightly.20260531)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 parse_asset_url() {
   local json_file=$1
   local asset_arch=$2
+  local asset_url
+  local release_tag
 
-  sed -n 's/.*"browser_download_url"[[:space:]]*:[[:space:]]*"\([^"]*gost_[^"]*_linux_'"${asset_arch}"'\.tar\.gz\)".*/\1/p' "$json_file" | head -n 1
+  while IFS= read -r asset_url; do
+    [ -n "$asset_url" ] || continue
+    release_tag="$(parse_release_tag_from_url "$asset_url")"
+    if is_ignored_prerelease_tag "$release_tag"; then
+      warn "Ignoring pre-release: ${release_tag}"
+      continue
+    fi
+    printf '%s\n' "$asset_url"
+    return 0
+  done <<EOF
+$(sed -n 's/.*"browser_download_url"[[:space:]]*:[[:space:]]*"\([^"]*gost_[^"]*_linux_'"${asset_arch}"'\.tar\.gz\)".*/\1/p' "$json_file")
+EOF
 }
 
 parse_release_tag_from_url() {

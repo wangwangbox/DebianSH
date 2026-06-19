@@ -272,7 +272,7 @@ parse_release_tag() {
 
 is_ignored_prerelease_tag() {
   case "$1" in
-    v3.2.7-nightly.20260529|v3.2.7-nightly.20260531)
+    v3.2.7-nightly.20260529|v3.2.7-nightly.20260531|v3.2.6|v3.2.7-nightly.20260605|v3.2.7-nightly.20260606|v3.2.7-nightly.20260619)
       return 0
       ;;
     *)

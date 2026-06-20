@@ -529,40 +529,42 @@ for release_index, release in enumerate(releases):
             continue
 
         normalized = re.sub(r"[^a-z0-9]+", "-", asset_name.lower())
-        score = 1000 - release_index
+        asset_score = 0
 
         if any(token in normalized for token in arch_tokens):
-            score += 80
+            asset_score += 80
         elif any(token in normalized for token in known_arch):
-            score -= 500
+            asset_score -= 500
         else:
-            score += 5
+            asset_score += 5
 
         if debian_tokens and any(token in normalized for token in debian_tokens):
-            score += 80
+            asset_score += 80
         elif any(token in normalized for token in known_debian):
-            score -= 300
+            asset_score -= 300
         else:
-            score += 5
+            asset_score += 5
 
         if "haproxy" in normalized:
-            score += 20
+            asset_score += 20
+        if "static" in normalized:
+            asset_score += 30
         if cpu_variant and re.search(rf"(^|-)x86-64-{re.escape(cpu_variant)}($|-)", normalized):
-            score += 200
+            asset_score += 200
         elif cpu_variant and re.search(r"(^|-)x86-64-v[1-4]($|-)", normalized):
-            score -= 80
+            asset_score -= 80
         if prerelease:
-            score -= 30
+            asset_score -= 30
 
-        if score < 700:
+        if asset_score < -200:
             continue
 
         suffix = " prerelease" if prerelease else ""
         label = f"{release_name} ({tag}) - {asset_name}{suffix}"
-        rows.append((score, label, download_url, asset_name))
+        rows.append((release_index, -asset_score, label, download_url, asset_name))
 
-rows.sort(key=lambda item: (-item[0], item[1]))
-for _, label, download_url, asset_name in rows:
+rows.sort(key=lambda item: (item[0], item[1], item[2]))
+for _, _, label, download_url, asset_name in rows:
     safe_label = label.replace("\t", " ").replace("\n", " ")
     safe_name = asset_name.replace("\t", " ").replace("\n", " ")
     print(f"{safe_label}\t{download_url}\t{safe_name}")

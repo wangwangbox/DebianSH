@@ -25,6 +25,8 @@ ENABLE_UDP_SUPPORT=0
 UDP_ASSET_NAME=""
 UDP_ASSET_LABEL=""
 UDP_ASSET_URL=""
+UDP_CPU_LEVEL=""
+UDP_CPU_VARIANT=""
 
 RED=""
 GREEN=""
@@ -194,7 +196,7 @@ check_dependencies() {
   local missing_packages=()
   local command_name
 
-  for command_name in awk chmod cp date grep head id install mkdir mktemp rm sed sort tee tr uname; do
+  for command_name in awk chmod cp date find grep head id install mkdir mktemp rm sed sort tee tr uname; do
     require_command "$command_name"
   done
 
@@ -266,6 +268,99 @@ ask_udp_support() {
   else
     ENABLE_UDP_SUPPORT=0
     ok "UDP support will not be installed."
+  fi
+}
+
+cpu_flags_have_all() {
+  local flags=$1
+  shift
+  local flag
+
+  for flag in "$@"; do
+    printf '%s\n' "$flags" | grep -Eq "(^|[[:space:]])${flag}([[:space:]]|$)" || return 1
+  done
+}
+
+cpu_flags_have_any() {
+  local flags=$1
+  shift
+  local flag
+
+  for flag in "$@"; do
+    if printf '%s\n' "$flags" | grep -Eq "(^|[[:space:]])${flag}([[:space:]]|$)"; then
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+detect_udp_cpu_level() {
+  local machine
+  local ld_path
+  local ld_help
+  local flags
+
+  machine="$(uname -m)"
+  UDP_CPU_LEVEL=""
+  UDP_CPU_VARIANT=""
+
+  case "$machine" in
+    x86_64|amd64)
+      ;;
+    *)
+      warn "Automatic x86-64 CPU level detection is not available for architecture: ${machine}"
+      return 0
+      ;;
+  esac
+
+  for ld_path in /lib64/ld-linux-x86-64.so.2 /lib/x86_64-linux-gnu/ld-linux-x86-64.so.2; do
+    if [ -x "$ld_path" ]; then
+      ld_help="$("$ld_path" --help 2>/dev/null || true)"
+      if printf '%s\n' "$ld_help" | grep -Eq 'x86-64-v4 .*supported'; then
+        UDP_CPU_LEVEL="x86-64-v4"
+        UDP_CPU_VARIANT="v4"
+        ok "Detected CPU level: ${UDP_CPU_LEVEL}; recommended UDP asset variant: ${UDP_CPU_VARIANT}"
+        return 0
+      fi
+      if printf '%s\n' "$ld_help" | grep -Eq 'x86-64-v3 .*supported'; then
+        UDP_CPU_LEVEL="x86-64-v3"
+        UDP_CPU_VARIANT="v3"
+        ok "Detected CPU level: ${UDP_CPU_LEVEL}; recommended UDP asset variant: ${UDP_CPU_VARIANT}"
+        return 0
+      fi
+      if printf '%s\n' "$ld_help" | grep -Eq 'x86-64-v2 .*supported'; then
+        UDP_CPU_LEVEL="x86-64-v2"
+        UDP_CPU_VARIANT="v2"
+        ok "Detected CPU level: ${UDP_CPU_LEVEL}; recommended UDP asset variant: ${UDP_CPU_VARIANT}"
+        return 0
+      fi
+    fi
+  done
+
+  if [ -r /proc/cpuinfo ]; then
+    flags="$(grep -m1 '^flags[[:space:]]*:' /proc/cpuinfo || true)"
+    if [ -n "$flags" ]; then
+      if cpu_flags_have_all "$flags" avx512f avx512bw avx512cd avx512dq avx512vl; then
+        UDP_CPU_LEVEL="x86-64-v4"
+        UDP_CPU_VARIANT="v4"
+      elif cpu_flags_have_all "$flags" avx avx2 bmi1 bmi2 f16c fma movbe xsave && cpu_flags_have_any "$flags" lzcnt abm; then
+        UDP_CPU_LEVEL="x86-64-v3"
+        UDP_CPU_VARIANT="v3"
+      elif cpu_flags_have_all "$flags" cx16 lahf_lm pni popcnt sse4_1 sse4_2 ssse3; then
+        UDP_CPU_LEVEL="x86-64-v2"
+        UDP_CPU_VARIANT="v2"
+      else
+        UDP_CPU_LEVEL="x86-64-v1"
+        UDP_CPU_VARIANT="v1"
+      fi
+    fi
+  fi
+
+  if [ -n "$UDP_CPU_LEVEL" ]; then
+    ok "Detected CPU level: ${UDP_CPU_LEVEL}; recommended UDP asset variant: ${UDP_CPU_VARIANT}"
+  else
+    warn "Could not detect x86-64 CPU level automatically. The first compatible UDP asset will be selected by default."
   fi
 }
 
@@ -358,14 +453,15 @@ select_udp_release_asset() {
   local labels=()
   local urls=()
   local names=()
-  local line
   local label
   local url
   local name
   local selected=""
   local i
+  local default_index=0
 
   release_tmp="$(mktemp)"
+  detect_udp_cpu_level
   log "Fetching UDP-enabled HAProxy releases from GitHub."
   run_cmd curl -fsSL --retry 3 --connect-timeout 15 -A "$DOWNLOAD_USER_AGENT" -o "$release_tmp" "$UDP_RELEASES_API"
 
@@ -374,12 +470,12 @@ select_udp_release_asset() {
     labels+=("$label")
     urls+=("$url")
     names+=("$name")
-  done < <(python3 - "$release_tmp" "$DEBIAN_VERSION_ID" "$(uname -m)" <<'PY'
+  done < <(python3 - "$release_tmp" "$DEBIAN_VERSION_ID" "$(uname -m)" "$UDP_CPU_VARIANT" <<'PY'
 import json
 import re
 import sys
 
-json_file, debian_version, machine = sys.argv[1:4]
+json_file, debian_version, machine, cpu_variant = sys.argv[1:5]
 with open(json_file, "r", encoding="utf-8") as fh:
     releases = json.load(fh)
 
@@ -396,6 +492,7 @@ debian_aliases = {
 }
 known_arch = ("amd64", "x86_64", "x64", "arm64", "aarch64", "armv7", "i386", "386")
 known_debian = ("debian11", "debian-11", "deb11", "bullseye", "debian12", "debian-12", "deb12", "bookworm", "debian13", "debian-13", "deb13", "trixie")
+checksum_suffixes = (".sha256", ".sha512", ".sha1", ".md5", ".asc", ".sig", ".minisig")
 
 arch_tokens = arch_aliases.get(machine.lower(), (machine.lower(),))
 debian_tokens = debian_aliases.get(debian_version, ())
@@ -409,6 +506,8 @@ for release_index, release in enumerate(releases):
         asset_name = asset.get("name") or ""
         download_url = asset.get("browser_download_url") or ""
         if not asset_name or not download_url:
+            continue
+        if asset_name.lower().endswith(checksum_suffixes):
             continue
 
         normalized = re.sub(r"[^a-z0-9]+", "-", asset_name.lower())
@@ -430,6 +529,10 @@ for release_index, release in enumerate(releases):
 
         if "haproxy" in normalized:
             score += 20
+        if cpu_variant and re.search(rf"(^|-)x86-64-{re.escape(cpu_variant)}($|-)", normalized):
+            score += 200
+        elif cpu_variant and re.search(r"(^|-)x86-64-v[1-4]($|-)", normalized):
+            score -= 80
         if prerelease:
             score -= 30
 
@@ -452,19 +555,32 @@ PY
 
   [ "${#labels[@]}" -gt 0 ] || die "No compatible UDP-enabled HAProxy release assets were found for Debian ${DEBIAN_VERSION_ID} on $(uname -m)."
 
+  if [ -n "$UDP_CPU_VARIANT" ]; then
+    for i in "${!names[@]}"; do
+      if printf '%s\n' "${names[$i]}" | grep -Eq "(^|[^[:alnum:]])x86-64-${UDP_CPU_VARIANT}([^[:alnum:]]|$)"; then
+        default_index="$i"
+        break
+      fi
+    done
+  fi
+
   printf '\nAvailable UDP-enabled HAProxy release assets:\n' > /dev/tty
   for i in "${!labels[@]}"; do
-    if [ "$i" -eq 0 ]; then
-      printf '  %s) %s  [default]\n' "$((i + 1))" "${labels[$i]}" > /dev/tty
+    if [ "$i" -eq "$default_index" ]; then
+      if [ -n "$UDP_CPU_VARIANT" ]; then
+        printf '  %s) %s  [default recommended for %s]\n' "$((i + 1))" "${labels[$i]}" "$UDP_CPU_LEVEL" > /dev/tty
+      else
+        printf '  %s) %s  [default]\n' "$((i + 1))" "${labels[$i]}" > /dev/tty
+      fi
     else
       printf '  %s) %s\n' "$((i + 1))" "${labels[$i]}" > /dev/tty
     fi
   done
 
   while true; do
-    printf 'Select a UDP-enabled HAProxy asset [default: 1]: ' > /dev/tty
+    printf 'Select a UDP-enabled HAProxy asset [default: %s]: ' "$((default_index + 1))" > /dev/tty
     IFS= read -r selected < /dev/tty || die "Failed to read input"
-    selected=${selected:-1}
+    selected=${selected:-$((default_index + 1))}
     case "$selected" in
       ''|*[!0-9]*) warn "Please enter a number." ;;
       *)

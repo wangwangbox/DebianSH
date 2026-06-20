@@ -13,11 +13,18 @@ CERT_DIR="/etc/haproxy/certs"
 CERT_FILE="${CERT_DIR}/server.pem"
 CONFIG_FILE="/etc/haproxy/haproxy.cfg"
 DOWNLOAD_USER_AGENT="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125 Safari/537.36"
+UDP_RELEASES_API="https://api.github.com/repos/wangwangbox/haproxy-3.4-udp/releases"
+UDP_RELEASES_PAGE="https://github.com/wangwangbox/haproxy-3.4-udp/releases"
+HAPROXY_BINARY="/usr/sbin/haproxy"
 
 DEBIAN_VERSION_ID=""
 DEBIAN_PRETTY_NAME=""
 HAPROXY_SUITE=""
 HAPROXY_SERIES=""
+ENABLE_UDP_SUPPORT=0
+UDP_ASSET_NAME=""
+UDP_ASSET_LABEL=""
+UDP_ASSET_URL=""
 
 RED=""
 GREEN=""
@@ -187,7 +194,7 @@ check_dependencies() {
   local missing_packages=()
   local command_name
 
-  for command_name in awk chmod grep head id install mkdir mktemp rm sed sort tee; do
+  for command_name in awk chmod cp date grep head id install mkdir mktemp rm sed sort tee tr uname; do
     require_command "$command_name"
   done
 
@@ -211,6 +218,24 @@ check_dependencies() {
     missing_packages+=(ca-certificates)
   fi
 
+  if [ "$ENABLE_UDP_SUPPORT" -eq 1 ]; then
+    if ! have_command python3; then
+      missing_packages+=(python3)
+    fi
+
+    if ! have_command tar; then
+      missing_packages+=(tar)
+    fi
+
+    if ! have_command gzip; then
+      missing_packages+=(gzip)
+    fi
+
+    if ! have_command unzip; then
+      missing_packages+=(unzip)
+    fi
+  fi
+
   if ! have_command systemctl; then
     die "systemctl was not found. This installer requires systemd."
   fi
@@ -221,11 +246,27 @@ check_dependencies() {
     require_command "$command_name"
   done
 
+  if [ "$ENABLE_UDP_SUPPORT" -eq 1 ]; then
+    for command_name in python3 tar gzip unzip; do
+      require_command "$command_name"
+    done
+  fi
+
   if ! systemctl --version >/dev/null 2>&1; then
     die "systemctl is present but not usable. Please run this on a systemd-based Debian host."
   fi
 
   ok "Required tools are available."
+}
+
+ask_udp_support() {
+  if prompt_yes_no "Enable UDP support with a custom HAProxy binary from GitHub releases?" "y"; then
+    ENABLE_UDP_SUPPORT=1
+    ok "UDP support will be installed from: ${UDP_RELEASES_PAGE}"
+  else
+    ENABLE_UDP_SUPPORT=0
+    ok "UDP support will not be installed."
+  fi
 }
 
 setup_haproxy_repository() {
@@ -312,6 +353,186 @@ install_haproxy() {
   ok "HAProxy installed."
 }
 
+select_udp_release_asset() {
+  local release_tmp
+  local labels=()
+  local urls=()
+  local names=()
+  local line
+  local label
+  local url
+  local name
+  local selected=""
+  local i
+
+  release_tmp="$(mktemp)"
+  log "Fetching UDP-enabled HAProxy releases from GitHub."
+  run_cmd curl -fsSL --retry 3 --connect-timeout 15 -A "$DOWNLOAD_USER_AGENT" -o "$release_tmp" "$UDP_RELEASES_API"
+
+  while IFS="$(printf '\t')" read -r label url name; do
+    [ -n "$label" ] || continue
+    labels+=("$label")
+    urls+=("$url")
+    names+=("$name")
+  done < <(python3 - "$release_tmp" "$DEBIAN_VERSION_ID" "$(uname -m)" <<'PY'
+import json
+import re
+import sys
+
+json_file, debian_version, machine = sys.argv[1:4]
+with open(json_file, "r", encoding="utf-8") as fh:
+    releases = json.load(fh)
+
+arch_aliases = {
+    "x86_64": ("amd64", "x86_64", "x64"),
+    "amd64": ("amd64", "x86_64", "x64"),
+    "aarch64": ("arm64", "aarch64"),
+    "arm64": ("arm64", "aarch64"),
+}
+debian_aliases = {
+    "11": ("debian11", "debian-11", "deb11", "bullseye"),
+    "12": ("debian12", "debian-12", "deb12", "bookworm"),
+    "13": ("debian13", "debian-13", "deb13", "trixie"),
+}
+known_arch = ("amd64", "x86_64", "x64", "arm64", "aarch64", "armv7", "i386", "386")
+known_debian = ("debian11", "debian-11", "deb11", "bullseye", "debian12", "debian-12", "deb12", "bookworm", "debian13", "debian-13", "deb13", "trixie")
+
+arch_tokens = arch_aliases.get(machine.lower(), (machine.lower(),))
+debian_tokens = debian_aliases.get(debian_version, ())
+rows = []
+
+for release_index, release in enumerate(releases):
+    tag = release.get("tag_name") or release.get("name") or "untagged"
+    release_name = release.get("name") or tag
+    prerelease = bool(release.get("prerelease"))
+    for asset in release.get("assets", []):
+        asset_name = asset.get("name") or ""
+        download_url = asset.get("browser_download_url") or ""
+        if not asset_name or not download_url:
+            continue
+
+        normalized = re.sub(r"[^a-z0-9]+", "-", asset_name.lower())
+        score = 1000 - release_index
+
+        if any(token in normalized for token in arch_tokens):
+            score += 80
+        elif any(token in normalized for token in known_arch):
+            score -= 500
+        else:
+            score += 5
+
+        if debian_tokens and any(token in normalized for token in debian_tokens):
+            score += 80
+        elif any(token in normalized for token in known_debian):
+            score -= 300
+        else:
+            score += 5
+
+        if "haproxy" in normalized:
+            score += 20
+        if prerelease:
+            score -= 30
+
+        if score < 700:
+            continue
+
+        suffix = " prerelease" if prerelease else ""
+        label = f"{release_name} ({tag}) - {asset_name}{suffix}"
+        rows.append((score, label, download_url, asset_name))
+
+rows.sort(key=lambda item: (-item[0], item[1]))
+for _, label, download_url, asset_name in rows:
+    safe_label = label.replace("\t", " ").replace("\n", " ")
+    safe_name = asset_name.replace("\t", " ").replace("\n", " ")
+    print(f"{safe_label}\t{download_url}\t{safe_name}")
+PY
+)
+
+  rm -f "$release_tmp"
+
+  [ "${#labels[@]}" -gt 0 ] || die "No compatible UDP-enabled HAProxy release assets were found for Debian ${DEBIAN_VERSION_ID} on $(uname -m)."
+
+  printf '\nAvailable UDP-enabled HAProxy release assets:\n' > /dev/tty
+  for i in "${!labels[@]}"; do
+    if [ "$i" -eq 0 ]; then
+      printf '  %s) %s  [default]\n' "$((i + 1))" "${labels[$i]}" > /dev/tty
+    else
+      printf '  %s) %s\n' "$((i + 1))" "${labels[$i]}" > /dev/tty
+    fi
+  done
+
+  while true; do
+    printf 'Select a UDP-enabled HAProxy asset [default: 1]: ' > /dev/tty
+    IFS= read -r selected < /dev/tty || die "Failed to read input"
+    selected=${selected:-1}
+    case "$selected" in
+      ''|*[!0-9]*) warn "Please enter a number." ;;
+      *)
+        if [ "$selected" -ge 1 ] && [ "$selected" -le "${#labels[@]}" ]; then
+          UDP_ASSET_LABEL="${labels[$((selected - 1))]}"
+          UDP_ASSET_NAME="${names[$((selected - 1))]}"
+          UDP_ASSET_URL="${urls[$((selected - 1))]}"
+          return 0
+        fi
+        warn "Selection out of range."
+        ;;
+    esac
+  done
+}
+
+install_udp_haproxy_binary() {
+  local asset_url=$1
+  local work_dir
+  local extract_dir
+  local asset_file
+  local asset_lower
+  local binary_path
+  local backup_file
+
+  work_dir="$(mktemp -d)"
+  extract_dir="${work_dir}/extract"
+  asset_file="${work_dir}/${UDP_ASSET_NAME:-haproxy-udp-asset}"
+  mkdir -p "$extract_dir"
+
+  log "Downloading selected UDP-enabled HAProxy asset: ${UDP_ASSET_LABEL}"
+  run_cmd curl -fL --retry 3 --connect-timeout 15 -A "$DOWNLOAD_USER_AGENT" -o "$asset_file" "$asset_url"
+
+  asset_lower="$(printf '%s' "${UDP_ASSET_NAME:-}" | tr 'A-Z' 'a-z')"
+  case "$asset_lower" in
+    *.tar.gz|*.tgz|*.tar.xz|*.tar.bz2|*.tar)
+      run_cmd tar -xf "$asset_file" -C "$extract_dir"
+      ;;
+    *.zip)
+      run_cmd unzip -q "$asset_file" -d "$extract_dir"
+      ;;
+    *.gz)
+      run_cmd gzip -dc "$asset_file" > "${extract_dir}/haproxy"
+      run_cmd chmod 0755 "${extract_dir}/haproxy"
+      ;;
+    *)
+      run_cmd cp "$asset_file" "${extract_dir}/haproxy"
+      run_cmd chmod 0755 "${extract_dir}/haproxy"
+      ;;
+  esac
+
+  binary_path="$(find "$extract_dir" -type f \( -name haproxy -o -name 'haproxy-*' -o -name 'haproxy_*' \) | head -n 1 || true)"
+  [ -n "$binary_path" ] || die "No HAProxy executable was found inside the selected UDP asset."
+
+  run_cmd chmod 0755 "$binary_path"
+  run_cmd "$binary_path" -v
+
+  if [ -f "$HAPROXY_BINARY" ]; then
+    backup_file="${HAPROXY_BINARY}.debian.$(date +%Y%m%d%H%M%S).bak"
+    log "Backing up Debian HAProxy binary to: ${backup_file}"
+    run_cmd as_root cp "$HAPROXY_BINARY" "$backup_file"
+  fi
+
+  run_cmd as_root install -m 0755 "$binary_path" "$HAPROXY_BINARY"
+  run_cmd as_root "$HAPROXY_BINARY" -v
+  rm -rf "$work_dir"
+  ok "UDP-enabled HAProxy binary installed: ${HAPROXY_BINARY}"
+}
+
 create_self_signed_certificate() {
   log "Creating certificate directory: ${CERT_DIR}"
   run_cmd as_root mkdir -p "$CERT_DIR"
@@ -376,11 +597,16 @@ main() {
 
   check_root_or_sudo
   check_debian_version
+  ask_udp_support
   check_dependencies
   setup_haproxy_repository
   update_apt_indexes
   selected_version="$(select_haproxy_version)"
   install_haproxy "$selected_version"
+  if [ "$ENABLE_UDP_SUPPORT" -eq 1 ]; then
+    select_udp_release_asset
+    install_udp_haproxy_binary "$UDP_ASSET_URL"
+  fi
   create_self_signed_certificate
   enable_haproxy_service
   wait_for_manual_config_upload

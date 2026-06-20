@@ -197,7 +197,7 @@ check_dependencies() {
   local missing_packages=()
   local command_name
 
-  for command_name in awk chmod cp date find grep head id install mkdir mktemp rm sed sort tee tr uname; do
+  for command_name in apt-mark awk chmod cp date find grep head id install mkdir mktemp rm sed sort tee tr uname; do
     require_command "$command_name"
   done
 
@@ -715,6 +715,16 @@ enable_haproxy_service() {
   run_cmd as_root systemctl enable haproxy
 }
 
+set_haproxy_package_hold_state() {
+  if [ "$UDP_INSTALL_STATUS" = "installed" ]; then
+    log "UDP-enabled HAProxy is installed. Holding the haproxy package to prevent APT from replacing it."
+    run_cmd as_root apt-mark hold haproxy
+  else
+    log "Debian APT HAProxy is in use. Removing any package hold from haproxy."
+    run_cmd as_root apt-mark unhold haproxy
+  fi
+}
+
 wait_for_manual_config_upload() {
   printf '\nPlease manually upload or edit your HAProxy configuration now:\n' > /dev/tty
   printf '  %s\n' "$CONFIG_FILE" > /dev/tty
@@ -776,6 +786,7 @@ main() {
       break
     done
   fi
+  set_haproxy_package_hold_state
   create_self_signed_certificate
   enable_haproxy_service
   wait_for_manual_config_upload

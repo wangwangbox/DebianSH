@@ -27,6 +27,7 @@ UDP_ASSET_LABEL=""
 UDP_ASSET_URL=""
 UDP_CPU_LEVEL=""
 UDP_CPU_VARIANT=""
+UDP_INSTALL_STATUS=""
 
 RED=""
 GREEN=""
@@ -364,6 +365,13 @@ detect_udp_cpu_level() {
   fi
 }
 
+print_glibc_version_hint() {
+  if have_command ldd; then
+    warn "System glibc version: $(ldd --version 2>/dev/null | head -n 1 || printf 'unknown')"
+  fi
+  warn "This usually means the selected UDP binary was built for a newer Linux distribution."
+}
+
 setup_haproxy_repository() {
   local key_tmp
   local gpg_tmp
@@ -605,6 +613,8 @@ install_udp_haproxy_binary() {
   local binary_path
   local backup_file
 
+  UDP_INSTALL_STATUS=""
+
   work_dir="$(mktemp -d)"
   extract_dir="${work_dir}/extract"
   asset_file="${work_dir}/${UDP_ASSET_NAME:-haproxy-udp-asset}"
@@ -635,7 +645,16 @@ install_udp_haproxy_binary() {
   [ -n "$binary_path" ] || die "No HAProxy executable was found inside the selected UDP asset."
 
   run_cmd chmod 0755 "$binary_path"
-  run_cmd "$binary_path" -v
+  log "Validating selected UDP-enabled HAProxy binary before replacing ${HAPROXY_BINARY}."
+  if ! "$binary_path" -v; then
+    warn "The selected UDP-enabled HAProxy binary cannot run on this system."
+    print_glibc_version_hint
+    warn "The Debian package HAProxy binary has not been replaced."
+    rm -rf "$work_dir"
+    UDP_INSTALL_STATUS="incompatible"
+    return 0
+  fi
+  ok "Selected UDP-enabled HAProxy binary can run on this system."
 
   if [ -f "$HAPROXY_BINARY" ]; then
     backup_file="${HAPROXY_BINARY}.debian.$(date +%Y%m%d%H%M%S).bak"
@@ -644,8 +663,18 @@ install_udp_haproxy_binary() {
   fi
 
   run_cmd as_root install -m 0755 "$binary_path" "$HAPROXY_BINARY"
-  run_cmd as_root "$HAPROXY_BINARY" -v
+  if ! as_root "$HAPROXY_BINARY" -v; then
+    warn "Installed UDP-enabled HAProxy binary failed after replacement."
+    if [ -n "${backup_file:-}" ] && [ -f "$backup_file" ]; then
+      warn "Restoring backed up Debian HAProxy binary: ${backup_file}"
+      run_cmd as_root install -m 0755 "$backup_file" "$HAPROXY_BINARY"
+    fi
+    rm -rf "$work_dir"
+    UDP_INSTALL_STATUS="incompatible"
+    return 0
+  fi
   rm -rf "$work_dir"
+  UDP_INSTALL_STATUS="installed"
   ok "UDP-enabled HAProxy binary installed: ${HAPROXY_BINARY}"
 }
 
@@ -720,8 +749,19 @@ main() {
   selected_version="$(select_haproxy_version)"
   install_haproxy "$selected_version"
   if [ "$ENABLE_UDP_SUPPORT" -eq 1 ]; then
-    select_udp_release_asset
-    install_udp_haproxy_binary "$UDP_ASSET_URL"
+    while true; do
+      select_udp_release_asset
+      install_udp_haproxy_binary "$UDP_ASSET_URL"
+      if [ "$UDP_INSTALL_STATUS" = "installed" ]; then
+        break
+      fi
+      if prompt_yes_no "Select another UDP-enabled HAProxy asset and try again?" "n"; then
+        continue
+      fi
+      ENABLE_UDP_SUPPORT=0
+      warn "Continuing with the Debian APT HAProxy binary without UDP support."
+      break
+    done
   fi
   create_self_signed_certificate
   enable_haproxy_service

@@ -330,6 +330,13 @@ prepare_gost_dir() {
   run_cmd as_root mkdir -p "$GOST_DIR"
 }
 
+stop_existing_gost_service() {
+  if systemctl is-active --quiet gostv3; then
+    warn "Existing gostv3 service is running. Stopping it before install."
+    run_cmd as_root systemctl stop gostv3
+  fi
+}
+
 download_gost_archive() {
   local asset_arch=$1
   local allow_prerelease=$2
@@ -455,6 +462,7 @@ main() {
   fi
 
   archive_file="$(download_gost_archive "$asset_arch" "$allow_prerelease")"
+  stop_existing_gost_service
   extract_and_install_gost "$archive_file"
   generate_certificates
 

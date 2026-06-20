@@ -402,6 +402,16 @@ update_apt_indexes() {
   run_cmd as_root apt-get update
 }
 
+stop_haproxy_if_running() {
+  if as_root systemctl is-active --quiet haproxy; then
+    warn "HAProxy service is already running. It will be stopped before installation continues."
+    run_cmd as_root systemctl stop haproxy
+    ok "HAProxy service stopped."
+  else
+    ok "HAProxy service is not running."
+  fi
+}
+
 select_haproxy_version() {
   local versions=()
   local default_index=0
@@ -746,6 +756,7 @@ main() {
   check_dependencies
   setup_haproxy_repository
   update_apt_indexes
+  stop_haproxy_if_running
   selected_version="$(select_haproxy_version)"
   install_haproxy "$selected_version"
   if [ "$ENABLE_UDP_SUPPORT" -eq 1 ]; then

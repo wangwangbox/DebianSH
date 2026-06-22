@@ -390,6 +390,29 @@ generate_certificates() {
     -subj "/C=CN/ST=GD/L=SZ/O=localhost/CN=localhost"
 }
 
+wait_for_uploaded_certificates() {
+  printf '\nPlease upload existing certificate files to:\n  %s/cert.pem\n  %s/key.pem\n' "$GOST_DIR" "$GOST_DIR" > /dev/tty
+
+  while true; do
+    prompt_yes_no "Continue after cert.pem and key.pem are ready?" "y" || die "cert.pem and key.pem are required to continue."
+    if [ -f "${GOST_DIR}/cert.pem" ] && [ -f "${GOST_DIR}/key.pem" ]; then
+      ok "Found existing certificate files."
+      return 0
+    fi
+
+    [ -f "${GOST_DIR}/cert.pem" ] || warn "Still not found: ${GOST_DIR}/cert.pem"
+    [ -f "${GOST_DIR}/key.pem" ] || warn "Still not found: ${GOST_DIR}/key.pem"
+  done
+}
+
+prepare_certificates() {
+  if prompt_yes_no "Generate new self-signed certificates? Choose no to upload existing cert.pem and key.pem. Default is yes." "y"; then
+    generate_certificates
+  else
+    wait_for_uploaded_certificates
+  fi
+}
+
 write_service_file() {
   local enable_logs=$1
   local tmp_service
@@ -431,14 +454,26 @@ write_service_file() {
 }
 
 wait_for_gost_json() {
-  printf '\nPlease upload or create gost.json at:\n  %s/gost.json\n' "$GOST_DIR" > /dev/tty
+  local config_file="${GOST_DIR}/gost.json"
 
-  while [ ! -f "${GOST_DIR}/gost.json" ]; do
+  printf '\nPlease upload or edit gost.json at:\n  %s\n' "$config_file" > /dev/tty
+
+  if [ ! -f "$config_file" ]; then
+    warn "Default gost.json was not found. Creating an empty file first."
+    run_cmd as_root touch "$config_file"
+  fi
+
+  while true; do
     prompt_yes_no "Continue after gost.json is ready?" "y" || die "gost.json is required before starting gostv3."
-    [ -f "${GOST_DIR}/gost.json" ] || warn "Still not found: ${GOST_DIR}/gost.json"
-  done
+    if [ -f "$config_file" ]; then
+      ok "Found ${config_file}"
+      return 0
+    fi
 
-  ok "Found ${GOST_DIR}/gost.json"
+    warn "Still not found: ${config_file}"
+    warn "Creating an empty gost.json again."
+    run_cmd as_root touch "$config_file"
+  done
 }
 
 main() {
@@ -464,7 +499,7 @@ main() {
   archive_file="$(download_gost_archive "$asset_arch" "$allow_prerelease")"
   stop_existing_gost_service
   extract_and_install_gost "$archive_file"
-  generate_certificates
+  prepare_certificates
 
   if prompt_yes_no "Enable systemd append logs in /root/gost/? Default is no." "n"; then
     log_choice="yes"

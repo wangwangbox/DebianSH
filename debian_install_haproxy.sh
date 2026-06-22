@@ -691,24 +691,56 @@ install_udp_haproxy_binary() {
 }
 
 create_self_signed_certificate() {
+  local cert_mode=""
+
   log "Creating certificate directory: ${CERT_DIR}"
   run_cmd as_root mkdir -p "$CERT_DIR"
 
-  if [ -f "$CERT_FILE" ]; then
-    if prompt_yes_no "Certificate already exists at ${CERT_FILE}. Replace it?" "n"; then
-      run_cmd as_root openssl req -new -newkey rsa:2048 -days 3650 -nodes -x509 -keyout "$CERT_FILE" -out "$CERT_FILE" -subj "/C=US/ST=NY/L=New York/O=localhost/OU=IT/CN=127.0.0.1"
-      run_cmd as_root chmod 600 "$CERT_FILE"
-    else
-      ok "Keeping existing certificate: ${CERT_FILE}"
-    fi
-  else
-    run_cmd as_root openssl req -new -newkey rsa:2048 -days 3650 -nodes -x509 -keyout "$CERT_FILE" -out "$CERT_FILE" -subj "/C=US/ST=NY/L=New York/O=localhost/OU=IT/CN=127.0.0.1"
-    run_cmd as_root chmod 600 "$CERT_FILE"
-  fi
+  printf '\nCertificate setup:\n' > /dev/tty
+  printf '  1) Generate a new self-signed certificate\n' > /dev/tty
+  printf '  2) Use an existing uploaded certificate file\n' > /dev/tty
+
+  while true; do
+    printf 'Select certificate option [default: 1]: ' > /dev/tty
+    IFS= read -r cert_mode < /dev/tty || die "Failed to read input"
+    cert_mode=${cert_mode:-1}
+    case "$cert_mode" in
+      1)
+        if [ -f "$CERT_FILE" ]; then
+          if prompt_yes_no "Certificate already exists at ${CERT_FILE}. Replace it?" "n"; then
+            run_cmd as_root openssl req -new -newkey rsa:2048 -days 3650 -nodes -x509 -keyout "$CERT_FILE" -out "$CERT_FILE" -subj "/C=US/ST=NY/L=New York/O=localhost/OU=IT/CN=127.0.0.1"
+            run_cmd as_root chmod 600 "$CERT_FILE"
+          else
+            ok "Keeping existing certificate: ${CERT_FILE}"
+          fi
+        else
+          run_cmd as_root openssl req -new -newkey rsa:2048 -days 3650 -nodes -x509 -keyout "$CERT_FILE" -out "$CERT_FILE" -subj "/C=US/ST=NY/L=New York/O=localhost/OU=IT/CN=127.0.0.1"
+          run_cmd as_root chmod 600 "$CERT_FILE"
+        fi
+        break
+        ;;
+      2)
+        printf '\nPlease upload your existing certificate file now:\n' > /dev/tty
+        printf '  %s\n' "$CERT_FILE" > /dev/tty
+        while true; do
+          prompt_enter "Press Enter after ${CERT_FILE} is uploaded, or press Ctrl+C to stop."
+          if [ -f "$CERT_FILE" ]; then
+            ok "Uploaded certificate file found: ${CERT_FILE}"
+            break
+          fi
+          warn "Certificate file not found: ${CERT_FILE}"
+        done
+        break
+        ;;
+      *)
+        warn "Please select 1 or 2."
+        ;;
+    esac
+  done
 
   as_root grep -q "BEGIN CERTIFICATE" "$CERT_FILE" || die "Certificate file does not contain a certificate: ${CERT_FILE}"
   as_root grep -q "PRIVATE KEY" "$CERT_FILE" || warn "Private key marker was not found in ${CERT_FILE}; verify the certificate manually before TLS use."
-  ok "Self-signed certificate is ready: ${CERT_FILE}"
+  ok "Certificate is ready: ${CERT_FILE}"
 }
 
 enable_haproxy_service() {

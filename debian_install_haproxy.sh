@@ -701,9 +701,9 @@ create_self_signed_certificate() {
   printf '  2) Use an existing uploaded certificate file\n' > /dev/tty
 
   while true; do
-    printf 'Select certificate option [default: 1]: ' > /dev/tty
+    printf 'Select certificate option [default: 2]: ' > /dev/tty
     IFS= read -r cert_mode < /dev/tty || die "Failed to read input"
-    cert_mode=${cert_mode:-1}
+    cert_mode=${cert_mode:-2}
     case "$cert_mode" in
       1)
         if [ -f "$CERT_FILE" ]; then

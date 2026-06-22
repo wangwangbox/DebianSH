@@ -406,10 +406,10 @@ wait_for_uploaded_certificates() {
 }
 
 prepare_certificates() {
-  if prompt_yes_no "Generate new self-signed certificates? Choose no to upload existing cert.pem and key.pem. Default is yes." "y"; then
-    generate_certificates
-  else
+  if prompt_yes_no "Upload existing cert.pem and key.pem? Choose no to generate new self-signed certificates. Default is yes." "y"; then
     wait_for_uploaded_certificates
+  else
+    generate_certificates
   fi
 }
 

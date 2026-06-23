@@ -264,9 +264,15 @@ prompt_domain() {
   local domain
 
   while true; do
-    domain="$(prompt_text "Enter the domain for AnyLink config downloads, without https:// or path")"
+    domain="$(prompt_text "Enter the domain for scheduled AnyLink config updates, without https:// or path. Leave empty to skip cron updates")"
     case "$domain" in
-      ""|*"://"*|*/*|*[[:space:]]*)
+      "")
+        if prompt_yes_no "No update domain was entered. Skip the update script and cron job?" "n"; then
+          printf '%s\n' ""
+          return 0
+        fi
+        ;;
+      *"://"*|*/*|*[[:space:]]*)
         warn "Please enter only a domain or host:port, for example vpn.example.com."
         ;;
       *)
@@ -487,14 +493,22 @@ main() {
   check_debian_version
   check_dependencies
   ensure_docker
-  download_update_script
   domain="$(prompt_domain)"
-  replace_update_domain "$domain"
-  validate_remote_config "$domain"
-  make_update_script_executable
+  if [ -n "$domain" ]; then
+    download_update_script
+    replace_update_domain "$domain"
+    validate_remote_config "$domain"
+    make_update_script_executable
+  else
+    ok "Skipped update script setup because no update domain was provided."
+  fi
   wait_for_conf_dir
-  install_cron_job
-  check_cron_execution
+  if [ -n "$domain" ]; then
+    install_cron_job
+    check_cron_execution
+  else
+    ok "Skipped cron job creation because no update domain was provided."
+  fi
   https_port="$(prompt_port "Enter host port to map to container 443" "4443")"
   admin_port="$(prompt_port "Enter host port to map to container 8800" "48800")"
 

@@ -293,6 +293,7 @@ write_service_file() {
   local domains=$1
   local enable_logs=$2
   local listen_addr=$3
+  local extra_listen_addr=$4
   local tmp_service
 
   tmp_service="$(mktemp)"
@@ -306,7 +307,7 @@ write_service_file() {
     printf '%s\n' "Type=simple"
     printf '%s\n' "User=root"
     printf '%s\n' "WorkingDirectory=/root/txt-dns-bridge"
-    printf '%s\n' "ExecStart=/usr/bin/python3 /root/txt-dns-bridge/txt-dns-bridge.py --listen ${listen_addr} --domains ${domains}"
+    printf '%s\n' "ExecStart=/usr/bin/python3 /root/txt-dns-bridge/txt-dns-bridge.py --listen ${listen_addr} --listen-extra ${extra_listen_addr} --domains ${domains}"
     printf '%s\n' "Restart=always"
     printf '%s\n' "RestartSec=10"
     if [ "$enable_logs" = "yes" ]; then
@@ -350,6 +351,7 @@ start_and_check_service() {
 
 main() {
   local domains
+  local extra_listen_addr
   local listen_addr
   local log_choice
 
@@ -365,11 +367,13 @@ main() {
   validate_bridge_script
   domains="$(prompt_domains)"
 
-  if prompt_yes_no "Fully open DNS listener to public network? This binds UDP 5353 on 0.0.0.0." "n"; then
+  if prompt_yes_no "Fully open DNS listener to public network? This binds UDP/TCP 5353 and test port 8053 on 0.0.0.0." "n"; then
     listen_addr="0.0.0.0:5353"
-    warn "Public access selected. Make sure host and cloud firewalls allow UDP 5353 only if this is intended."
+    extra_listen_addr="0.0.0.0:8053"
+    warn "Public access selected. Make sure host and cloud firewalls allow UDP/TCP 5353 and 8053 only if this is intended."
   else
     listen_addr="127.0.0.1:5353"
+    extra_listen_addr="127.0.0.1:8053"
   fi
 
   if prompt_yes_no "Enable systemd append logs in /root/txt-dns-bridge/? Default is no." "n"; then
@@ -378,7 +382,7 @@ main() {
     log_choice="no"
   fi
 
-  write_service_file "$domains" "$log_choice" "$listen_addr"
+  write_service_file "$domains" "$log_choice" "$listen_addr" "$extra_listen_addr"
   start_and_check_service
 }
 

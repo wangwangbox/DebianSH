@@ -341,9 +341,9 @@ class TxtIpResolver:
         self.cache_stale = cache_stale
         self.cache = {}
 
-    def resolve_ip(self, name, use_tcp=False):
+    def resolve_ip(self, name):
         try:
-            values = query_txt(name, self.upstream, self.timeout, self.retries, use_tcp)
+            values = query_txt(name, self.upstream, self.timeout, self.retries)
             last_error = None
             for value in values:
                 try:
@@ -397,7 +397,7 @@ def handle_dns_packet(packet, resolver, domains, upstream, args, use_tcp=False):
     txid, flags, qname, qtype, qclass, question = parse_query(packet)
     if qclass == CLASS_IN and matches_domain(qname, domains) and qtype in (TYPE_A, TYPE_AAAA, TYPE_TXT):
         try:
-            ip, source = resolver.resolve_ip(qname, use_tcp)
+            ip, source = resolver.resolve_ip(qname)
             ip_obj = ipaddress.ip_address(ip)
             if qtype == TYPE_TXT:
                 response = build_txt_response(txid, flags, question, qclass, ip, args.ttl)
@@ -465,7 +465,7 @@ def serve_tcp(listen_host, listen_port, resolver, domains, upstream, args):
 
 
 def serve(args):
-    listen_host, listen_port = parse_host_port(args.listen, 5353)
+    listen_addrs = parse_listen_addrs(args.listen, args.listen_extra)
     if args.upstream:
         upstream = args.upstream
         upstream_source = "command line"
@@ -483,18 +483,39 @@ def serve(args):
     print("upstream DNS server: %s (%s)" % (upstream, upstream_source), flush=True)
     print("decrypting TXT for domains: %s" % ", ".join(domains), flush=True)
 
-    udp_thread = threading.Thread(
-        target=serve_udp,
-        args=(listen_host, listen_port, resolver, domains, upstream, args),
-        daemon=True,
-    )
-    udp_thread.start()
-    serve_tcp(listen_host, listen_port, resolver, domains, upstream, args)
+    threads = []
+    for listen_host, listen_port in listen_addrs:
+        for target in (serve_udp, serve_tcp):
+            thread = threading.Thread(
+                target=target,
+                args=(listen_host, listen_port, resolver, domains, upstream, args),
+            )
+            thread.start()
+            threads.append(thread)
+
+    for thread in threads:
+        thread.join()
+
+
+def parse_listen_addrs(primary, extra):
+    values = [primary]
+    if extra:
+        values.extend(item.strip() for item in extra.split(",") if item.strip())
+
+    listen_addrs = []
+    for value in values:
+        if not value.strip():
+            continue
+        listen_addrs.append(parse_host_port(value, 5353))
+    if not listen_addrs:
+        raise DnsError("no listen address configured")
+    return listen_addrs
 
 
 def parse_args(argv):
     parser = argparse.ArgumentParser(description="DNS proxy that converts encrypted TXT IP records into A/AAAA answers.")
-    parser.add_argument("--listen", default="127.0.0.1:5353", help="UDP listen address, default: 127.0.0.1:5353; use 0.0.0.0:5353 for public IPv4 access")
+    parser.add_argument("--listen", default="127.0.0.1:5353", help="UDP/TCP listen address, default: 127.0.0.1:5353; use 0.0.0.0:5353 for public IPv4 access")
+    parser.add_argument("--listen-extra", default="", help="comma-separated extra UDP/TCP listen addresses, for example: 0.0.0.0:8053")
     parser.add_argument("--domains", default="windowsupdate.io", help="comma-separated domain suffixes to decrypt")
     parser.add_argument("--upstream", help="upstream DNS server; default: system DNS from /etc/resolv.conf or Windows ipconfig")
     parser.add_argument("--key", default="windowsupdate", help="repeating XOR key")

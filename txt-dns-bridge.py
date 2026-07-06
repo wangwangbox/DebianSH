@@ -14,6 +14,7 @@ import socket
 import struct
 import subprocess
 import sys
+import threading
 import time
 
 
@@ -171,14 +172,27 @@ def parse_txt_response(packet, expected_txid):
     return values
 
 
-def query_txt(name, upstream, timeout):
+def query_txt(name, upstream, timeout, retries, use_tcp=False):
     txid, packet = build_query(name, TYPE_TXT)
-    response = send_udp_dns(packet, upstream, timeout)
+    response = send_dns(packet, upstream, timeout, retries, use_tcp)
     return parse_txt_response(response, txid)
 
 
-def forward_query(packet, upstream, timeout):
-    return send_udp_dns(packet, upstream, timeout)
+def forward_query(packet, upstream, timeout, retries, use_tcp=False):
+    return send_dns(packet, upstream, timeout, retries, use_tcp)
+
+
+def send_dns(packet, upstream, timeout, retries, use_tcp=False):
+    attempts = max(1, retries + 1)
+    last_error = None
+    for _ in range(attempts):
+        try:
+            if use_tcp:
+                return send_tcp_dns(packet, upstream, timeout)
+            return send_udp_dns(packet, upstream, timeout)
+        except Exception as exc:
+            last_error = exc
+    raise last_error
 
 
 def send_udp_dns(packet, upstream, timeout):
@@ -195,6 +209,30 @@ def send_udp_dns(packet, upstream, timeout):
         sock.sendto(packet, (host, port))
         response, _ = sock.recvfrom(4096)
     return response
+
+
+def read_exact(sock, size):
+    chunks = []
+    remaining = size
+    while remaining:
+        chunk = sock.recv(remaining)
+        if not chunk:
+            raise DnsError("truncated TCP DNS message")
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
+
+
+def send_tcp_dns(packet, upstream, timeout):
+    host, port = parse_host_port(upstream, 53)
+    family = socket_family_for_host(host)
+
+    with socket.socket(family, socket.SOCK_STREAM) as sock:
+        sock.settimeout(timeout)
+        sock.connect((host, port))
+        sock.sendall(struct.pack("!H", len(packet)) + packet)
+        length = struct.unpack("!H", read_exact(sock, 2))[0]
+        return read_exact(sock, length)
 
 
 def parse_host_port(value, default_port):
@@ -295,16 +333,17 @@ def matches_domain(name, domains):
 
 
 class TxtIpResolver:
-    def __init__(self, upstream, key, timeout, cache_stale):
+    def __init__(self, upstream, key, timeout, retries, cache_stale):
         self.upstream = upstream
         self.key = key
         self.timeout = timeout
+        self.retries = retries
         self.cache_stale = cache_stale
         self.cache = {}
 
-    def resolve_ip(self, name):
+    def resolve_ip(self, name, use_tcp=False):
         try:
-            values = query_txt(name, self.upstream, self.timeout)
+            values = query_txt(name, self.upstream, self.timeout, self.retries, use_tcp)
             last_error = None
             for value in values:
                 try:
@@ -354,6 +393,77 @@ def build_txt_response(txid, request_flags, question, qclass, text, ttl):
     return header + question + answer
 
 
+def handle_dns_packet(packet, resolver, domains, upstream, args, use_tcp=False):
+    txid, flags, qname, qtype, qclass, question = parse_query(packet)
+    if qclass == CLASS_IN and matches_domain(qname, domains) and qtype in (TYPE_A, TYPE_AAAA, TYPE_TXT):
+        try:
+            ip, source = resolver.resolve_ip(qname, use_tcp)
+            ip_obj = ipaddress.ip_address(ip)
+            if qtype == TYPE_TXT:
+                response = build_txt_response(txid, flags, question, qclass, ip, args.ttl)
+                print("%s TXT -> %s (%s)" % (qname, ip, source), flush=True)
+            elif (qtype == TYPE_A and ip_obj.version == 4) or (qtype == TYPE_AAAA and ip_obj.version == 6):
+                response = build_ip_response(txid, flags, question, qtype, qclass, ip, args.ttl)
+                print("%s -> %s (%s)" % (qname, ip, source), flush=True)
+            else:
+                response = forward_query(packet, upstream, args.timeout, args.retries, use_tcp)
+                print("%s -> upstream (TXT IP version mismatch)" % qname, flush=True)
+        except Exception as exc:
+            response = forward_query(packet, upstream, args.timeout, args.retries, use_tcp)
+            print("%s -> upstream (%s)" % (qname, exc), flush=True)
+    else:
+        response = forward_query(packet, upstream, args.timeout, args.retries, use_tcp)
+    return response
+
+
+def serve_udp(listen_host, listen_port, resolver, domains, upstream, args):
+    with socket.socket(socket_family_for_host(listen_host), socket.SOCK_DGRAM) as sock:
+        sock.bind((listen_host, listen_port))
+        print("txt-dns-bridge UDP listening on %s:%d" % (listen_host, listen_port), flush=True)
+
+        while True:
+            packet, addr = sock.recvfrom(4096)
+            try:
+                response = handle_dns_packet(packet, resolver, domains, upstream, args, False)
+                sock.sendto(response, addr)
+            except Exception as exc:
+                print("UDP request error from %s: %s" % (addr, exc), file=sys.stderr, flush=True)
+
+
+def handle_tcp_client(conn, addr, resolver, domains, upstream, args):
+    with conn:
+        try:
+            while True:
+                header = conn.recv(2)
+                if not header:
+                    return
+                if len(header) < 2:
+                    header += read_exact(conn, 2 - len(header))
+                length = struct.unpack("!H", header)[0]
+                packet = read_exact(conn, length)
+                response = handle_dns_packet(packet, resolver, domains, upstream, args, True)
+                conn.sendall(struct.pack("!H", len(response)) + response)
+        except Exception as exc:
+            print("TCP request error from %s: %s" % (addr, exc), file=sys.stderr, flush=True)
+
+
+def serve_tcp(listen_host, listen_port, resolver, domains, upstream, args):
+    with socket.socket(socket_family_for_host(listen_host), socket.SOCK_STREAM) as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind((listen_host, listen_port))
+        sock.listen(128)
+        print("txt-dns-bridge TCP listening on %s:%d" % (listen_host, listen_port), flush=True)
+
+        while True:
+            conn, addr = sock.accept()
+            thread = threading.Thread(
+                target=handle_tcp_client,
+                args=(conn, addr, resolver, domains, upstream, args),
+                daemon=True,
+            )
+            thread.start()
+
+
 def serve(args):
     listen_host, listen_port = parse_host_port(args.listen, 5353)
     if args.upstream:
@@ -366,40 +476,20 @@ def serve(args):
         upstream=upstream,
         key=args.key,
         timeout=args.timeout,
+        retries=args.retries,
         cache_stale=args.cache_stale,
     )
 
-    with socket.socket(socket_family_for_host(listen_host), socket.SOCK_DGRAM) as sock:
-        sock.bind((listen_host, listen_port))
-        print("txt-dns-bridge listening on %s:%d" % (listen_host, listen_port), flush=True)
-        print("upstream DNS server: %s (%s)" % (upstream, upstream_source), flush=True)
-        print("decrypting TXT for domains: %s" % ", ".join(domains), flush=True)
+    print("upstream DNS server: %s (%s)" % (upstream, upstream_source), flush=True)
+    print("decrypting TXT for domains: %s" % ", ".join(domains), flush=True)
 
-        while True:
-            packet, addr = sock.recvfrom(4096)
-            try:
-                txid, flags, qname, qtype, qclass, question = parse_query(packet)
-                if qclass == CLASS_IN and matches_domain(qname, domains) and qtype in (TYPE_A, TYPE_AAAA, TYPE_TXT):
-                    try:
-                        ip, source = resolver.resolve_ip(qname)
-                        ip_obj = ipaddress.ip_address(ip)
-                        if qtype == TYPE_TXT:
-                            response = build_txt_response(txid, flags, question, qclass, ip, args.ttl)
-                            print("%s TXT -> %s (%s)" % (qname, ip, source), flush=True)
-                        elif (qtype == TYPE_A and ip_obj.version == 4) or (qtype == TYPE_AAAA and ip_obj.version == 6):
-                            response = build_ip_response(txid, flags, question, qtype, qclass, ip, args.ttl)
-                            print("%s -> %s (%s)" % (qname, ip, source), flush=True)
-                        else:
-                            response = forward_query(packet, upstream, args.timeout)
-                            print("%s -> upstream (TXT IP version mismatch)" % qname, flush=True)
-                    except Exception as exc:
-                        response = forward_query(packet, upstream, args.timeout)
-                        print("%s -> upstream (%s)" % (qname, exc), flush=True)
-                else:
-                    response = forward_query(packet, upstream, args.timeout)
-                sock.sendto(response, addr)
-            except Exception as exc:
-                print("request error from %s: %s" % (addr, exc), file=sys.stderr, flush=True)
+    udp_thread = threading.Thread(
+        target=serve_udp,
+        args=(listen_host, listen_port, resolver, domains, upstream, args),
+        daemon=True,
+    )
+    udp_thread.start()
+    serve_tcp(listen_host, listen_port, resolver, domains, upstream, args)
 
 
 def parse_args(argv):
@@ -410,6 +500,7 @@ def parse_args(argv):
     parser.add_argument("--key", default="windowsupdate", help="repeating XOR key")
     parser.add_argument("--ttl", type=int, default=30, help="TTL for returned A records")
     parser.add_argument("--timeout", type=float, default=2.0, help="upstream TXT query timeout in seconds")
+    parser.add_argument("--retries", type=int, default=2, help="upstream DNS retry count after the first attempt")
     parser.add_argument("--cache-stale", type=int, default=3600, help="seconds to keep using last good IP after errors")
     parser.add_argument("--encrypt", help="print encrypted hex TXT value for this plaintext IP and exit")
     return parser.parse_args(argv)

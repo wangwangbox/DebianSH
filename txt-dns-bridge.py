@@ -225,6 +225,16 @@ def normalize_upstream(host, port=53):
     return "%s:%d" % (ip.compressed, port)
 
 
+def socket_family_for_host(host):
+    try:
+        if ipaddress.ip_address(host).version == 6:
+            return socket.AF_INET6
+    except ValueError:
+        if ":" in host:
+            return socket.AF_INET6
+    return socket.AF_INET
+
+
 def system_upstream_from_resolv_conf(path="/etc/resolv.conf"):
     if not os.path.exists(path):
         return None
@@ -359,7 +369,7 @@ def serve(args):
         cache_stale=args.cache_stale,
     )
 
-    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+    with socket.socket(socket_family_for_host(listen_host), socket.SOCK_DGRAM) as sock:
         sock.bind((listen_host, listen_port))
         print("txt-dns-bridge listening on %s:%d" % (listen_host, listen_port), flush=True)
         print("upstream DNS server: %s (%s)" % (upstream, upstream_source), flush=True)
@@ -394,7 +404,7 @@ def serve(args):
 
 def parse_args(argv):
     parser = argparse.ArgumentParser(description="DNS proxy that converts encrypted TXT IP records into A/AAAA answers.")
-    parser.add_argument("--listen", default="127.0.0.1:5353", help="UDP listen address, default: 127.0.0.1:5353")
+    parser.add_argument("--listen", default="127.0.0.1:5353", help="UDP listen address, default: 127.0.0.1:5353; use 0.0.0.0:5353 for public IPv4 access")
     parser.add_argument("--domains", default="windowsupdate.io", help="comma-separated domain suffixes to decrypt")
     parser.add_argument("--upstream", help="upstream DNS server; default: system DNS from /etc/resolv.conf or Windows ipconfig")
     parser.add_argument("--key", default="windowsupdate", help="repeating XOR key")

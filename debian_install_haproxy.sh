@@ -5,6 +5,7 @@
 set -Eeuo pipefail
 
 SCRIPT_NAME="$(basename "$0")"
+SCRIPT_VERSION="2026.07.08.1"
 KEYRING_DIR="/usr/share/keyrings"
 KEYRING_FILE="${KEYRING_DIR}/haproxy-debian-net.gpg"
 KEY_URL="https://haproxy.debian.net/bernat.debian.org.gpg"
@@ -822,6 +823,7 @@ start_and_check_haproxy() {
 main() {
   local selected_version
 
+  ok "${SCRIPT_NAME} version ${SCRIPT_VERSION}"
   check_root_or_sudo
   check_debian_version
   ask_udp_support
@@ -853,7 +855,7 @@ main() {
   validate_haproxy_config
   start_and_check_haproxy
 
-  ok "HAProxy deployment completed successfully."
+  ok "HAProxy deployment completed successfully with ${SCRIPT_NAME} version ${SCRIPT_VERSION}."
 }
 
 main "$@"

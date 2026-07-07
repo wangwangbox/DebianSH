@@ -412,6 +412,15 @@ stop_haproxy_if_running() {
   fi
 }
 
+unhold_haproxy_before_install() {
+  if apt-mark showhold | grep -Fxq haproxy; then
+    warn "The haproxy package is currently held. It will be unheld before package installation."
+    run_cmd as_root apt-mark unhold haproxy
+  else
+    ok "The haproxy package is not held."
+  fi
+}
+
 select_haproxy_version() {
   local versions=()
   local default_index=0
@@ -462,6 +471,7 @@ install_haproxy() {
   local selected_version=$1
 
   log "Installing HAProxy version: ${selected_version}"
+  unhold_haproxy_before_install
   run_cmd as_root apt-get install -y "haproxy=${selected_version}"
   ok "HAProxy installed."
 }

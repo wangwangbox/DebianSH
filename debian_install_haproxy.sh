@@ -634,6 +634,9 @@ install_udp_haproxy_binary() {
   local asset_lower
   local binary_path
   local backup_file
+  local debug_path
+  local debug_target
+  local debug_backup
 
   UDP_INSTALL_STATUS=""
 
@@ -665,6 +668,7 @@ install_udp_haproxy_binary() {
 
   binary_path="$(find "$extract_dir" -type f \( -name haproxy -o -name 'haproxy-*' -o -name 'haproxy_*' \) | head -n 1 || true)"
   [ -n "$binary_path" ] || die "No HAProxy executable was found inside the selected UDP asset."
+  debug_path="$(find "$extract_dir" -type f -name 'haproxy.debug' | head -n 1 || true)"
 
   run_cmd chmod 0755 "$binary_path"
   log "Validating selected UDP-enabled HAProxy binary before replacing ${HAPROXY_BINARY}."
@@ -694,6 +698,20 @@ install_udp_haproxy_binary() {
     rm -rf "$work_dir"
     UDP_INSTALL_STATUS="incompatible"
     return 0
+  fi
+  if [ -n "$debug_path" ]; then
+    debug_target="${HAPROXY_BINARY%/*}/haproxy.debug"
+    if prompt_yes_no "Install haproxy.debug beside ${HAPROXY_BINARY}?" "n"; then
+      if [ -f "$debug_target" ]; then
+        debug_backup="${debug_target}.debian.$(date +%Y%m%d%H%M%S).bak"
+        log "Backing up existing HAProxy debug file to: ${debug_backup}"
+        run_cmd as_root cp "$debug_target" "$debug_backup"
+      fi
+      run_cmd as_root install -m 0644 "$debug_path" "$debug_target"
+      ok "HAProxy debug file installed: ${debug_target}"
+    else
+      ok "HAProxy debug file was not installed."
+    fi
   fi
   rm -rf "$work_dir"
   UDP_INSTALL_STATUS="installed"

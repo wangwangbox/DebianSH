@@ -5,7 +5,7 @@
 set -Eeuo pipefail
 
 SCRIPT_NAME="$(basename "$0")"
-SCRIPT_VERSION="2026.07.08.2"
+SCRIPT_VERSION="2026.07.08.3"
 KEYRING_DIR="/usr/share/keyrings"
 KEYRING_FILE="${KEYRING_DIR}/haproxy-debian-net.gpg"
 KEY_URL="https://haproxy.debian.net/bernat.debian.org.gpg"
@@ -805,6 +805,8 @@ wait_for_manual_config_upload() {
 
 deploy_rustdesk_udp_payload_check() {
   local tmp_file
+  local check_output
+  local check_rc
 
   if ! prompt_yes_no "Deploy rustdesk_udp_payload_check.py before starting HAProxy?" "y"; then
     ok "Skipping rustdesk_udp_payload_check.py deployment."
@@ -826,7 +828,20 @@ deploy_rustdesk_udp_payload_check() {
   rm -f "$tmp_file"
 
   run_cmd as_root chmod +x "$RUSTDESK_CHECK_FILE"
-  run_cmd as_root python3 "$RUSTDESK_CHECK_FILE"
+  log "Testing rustdesk_udp_payload_check.py execution."
+  trap - ERR
+  set +e
+  check_output="$(as_root python3 "$RUSTDESK_CHECK_FILE" 2>&1)"
+  check_rc=$?
+  set -e
+  trap 'on_error "$LINENO"' ERR
+  printf '%s\n' "$check_output" >&2
+  log "rustdesk_udp_payload_check.py test exit code: ${check_rc}"
+  if printf '%s\n' "$check_output" | grep -q 'rustdesk_udp_payload_check:'; then
+    ok "rustdesk_udp_payload_check.py executed and produced the expected check output."
+  else
+    die "rustdesk_udp_payload_check.py did not produce the expected check output."
+  fi
   ok "rustdesk_udp_payload_check.py is ready: ${RUSTDESK_CHECK_FILE}"
 }
 

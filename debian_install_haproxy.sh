@@ -5,7 +5,7 @@
 set -Eeuo pipefail
 
 SCRIPT_NAME="$(basename "$0")"
-SCRIPT_VERSION="2026.07.08.3"
+SCRIPT_VERSION="2026.07.08.4"
 KEYRING_DIR="/usr/share/keyrings"
 KEYRING_FILE="${KEYRING_DIR}/haproxy-debian-net.gpg"
 KEY_URL="https://haproxy.debian.net/bernat.debian.org.gpg"
@@ -529,9 +529,15 @@ arch_tokens = arch_aliases.get(machine.lower(), (machine.lower(),))
 debian_tokens = debian_aliases.get(debian_version, ())
 rows = []
 
+def release_sort_key(tag, release_index):
+    parts = [int(part) for part in re.findall(r"\d+", tag)]
+    parts = (parts + [0] * 8)[:8]
+    return tuple(-part for part in parts) + (release_index,)
+
 for release_index, release in enumerate(releases):
     tag = release.get("tag_name") or release.get("name") or "untagged"
     release_name = release.get("name") or tag
+    release_key = release_sort_key(tag, release_index)
     prerelease = bool(release.get("prerelease"))
     for asset in release.get("assets", []):
         asset_name = asset.get("name") or ""
@@ -574,7 +580,7 @@ for release_index, release in enumerate(releases):
 
         suffix = " prerelease" if prerelease else ""
         label = f"{release_name} ({tag}) - {asset_name}{suffix}"
-        rows.append((release_index, -asset_score, label, download_url, asset_name))
+        rows.append((release_key, -asset_score, label, download_url, asset_name))
 
 rows.sort(key=lambda item: (item[0], item[1], item[2]))
 for _, _, label, download_url, asset_name in rows:

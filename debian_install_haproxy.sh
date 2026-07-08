@@ -5,7 +5,7 @@
 set -Eeuo pipefail
 
 SCRIPT_NAME="$(basename "$0")"
-SCRIPT_VERSION="2026.07.08.4"
+SCRIPT_VERSION="2026.07.08.5"
 KEYRING_DIR="/usr/share/keyrings"
 KEYRING_FILE="${KEYRING_DIR}/haproxy-debian-net.gpg"
 KEY_URL="https://haproxy.debian.net/bernat.debian.org.gpg"
@@ -18,6 +18,8 @@ UDP_RELEASES_API="https://api.github.com/repos/wangwangbox/haproxy-3.4-udp/relea
 UDP_RELEASES_PAGE="https://github.com/wangwangbox/haproxy-3.4-udp/releases"
 HAPROXY_BINARY="/usr/sbin/haproxy"
 RUSTDESK_CHECK_URL="https://raw.githubusercontent.com/wangwangbox/DebianSH/main/rustdesk_udp_payload_check.py"
+RUSTDESK_CHECK_URL_GITHUB="https://github.com/wangwangbox/DebianSH/raw/main/rustdesk_udp_payload_check.py"
+RUSTDESK_CHECK_URL_CDN="https://cdn.jsdelivr.net/gh/wangwangbox/DebianSH@main/rustdesk_udp_payload_check.py"
 RUSTDESK_CHECK_FILE="/etc/haproxy/rustdesk_udp_payload_check.py"
 
 DEBIAN_VERSION_ID=""
@@ -809,6 +811,33 @@ wait_for_manual_config_upload() {
   done
 }
 
+download_rustdesk_udp_payload_check() {
+  local output=$1
+  local urls=("$RUSTDESK_CHECK_URL" "$RUSTDESK_CHECK_URL_GITHUB" "$RUSTDESK_CHECK_URL_CDN")
+  local url
+  local rc
+
+  for url in "${urls[@]}"; do
+    log "Trying download: ${url}"
+    trap - ERR
+    set +e
+    curl -fsSL --retry 5 --retry-delay 3 --connect-timeout 15 -A "$DOWNLOAD_USER_AGENT" -o "$output" "$url"
+    rc=$?
+    set -e
+    trap 'on_error "$LINENO"' ERR
+
+    if [ "$rc" -eq 0 ] && [ -s "$output" ]; then
+      ok "Downloaded rustdesk_udp_payload_check.py from: ${url}"
+      return 0
+    fi
+
+    warn "Download failed from ${url} with exit code ${rc}; trying next source."
+    rm -f "$output"
+  done
+
+  die "Failed to download rustdesk_udp_payload_check.py from all configured sources."
+}
+
 deploy_rustdesk_udp_payload_check() {
   local tmp_file
   local check_output
@@ -826,7 +855,7 @@ deploy_rustdesk_udp_payload_check() {
 
   tmp_file="$(mktemp)"
   log "Downloading rustdesk_udp_payload_check.py."
-  run_cmd curl -fsSL --retry 3 --connect-timeout 15 -A "$DOWNLOAD_USER_AGENT" -o "$tmp_file" "$RUSTDESK_CHECK_URL"
+  download_rustdesk_udp_payload_check "$tmp_file"
 
   [ -s "$tmp_file" ] || die "Downloaded rustdesk_udp_payload_check.py is empty."
   run_cmd python3 -m py_compile "$tmp_file"

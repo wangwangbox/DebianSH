@@ -5,7 +5,7 @@
 set -Eeuo pipefail
 
 SCRIPT_NAME="$(basename "$0")"
-SCRIPT_VERSION="2026.07.08.1"
+SCRIPT_VERSION="2026.07.08.2"
 KEYRING_DIR="/usr/share/keyrings"
 KEYRING_FILE="${KEYRING_DIR}/haproxy-debian-net.gpg"
 KEY_URL="https://haproxy.debian.net/bernat.debian.org.gpg"
@@ -17,6 +17,8 @@ DOWNLOAD_USER_AGENT="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, 
 UDP_RELEASES_API="https://api.github.com/repos/wangwangbox/haproxy-3.4-udp/releases"
 UDP_RELEASES_PAGE="https://github.com/wangwangbox/haproxy-3.4-udp/releases"
 HAPROXY_BINARY="/usr/sbin/haproxy"
+RUSTDESK_CHECK_URL="https://raw.githubusercontent.com/wangwangbox/DebianSH/main/rustdesk_udp_payload_check.py"
+RUSTDESK_CHECK_FILE="/etc/haproxy/rustdesk_udp_payload_check.py"
 
 DEBIAN_VERSION_ID=""
 DEBIAN_PRETTY_NAME=""
@@ -801,6 +803,33 @@ wait_for_manual_config_upload() {
   done
 }
 
+deploy_rustdesk_udp_payload_check() {
+  local tmp_file
+
+  if ! prompt_yes_no "Deploy rustdesk_udp_payload_check.py before starting HAProxy?" "y"; then
+    ok "Skipping rustdesk_udp_payload_check.py deployment."
+    return 0
+  fi
+
+  if ! have_command python3; then
+    install_missing_packages python3
+  fi
+  require_command python3
+
+  tmp_file="$(mktemp)"
+  log "Downloading rustdesk_udp_payload_check.py."
+  run_cmd curl -fsSL --retry 3 --connect-timeout 15 -A "$DOWNLOAD_USER_AGENT" -o "$tmp_file" "$RUSTDESK_CHECK_URL"
+
+  [ -s "$tmp_file" ] || die "Downloaded rustdesk_udp_payload_check.py is empty."
+  run_cmd python3 -m py_compile "$tmp_file"
+  run_cmd as_root install -m 0755 "$tmp_file" "$RUSTDESK_CHECK_FILE"
+  rm -f "$tmp_file"
+
+  run_cmd as_root chmod +x "$RUSTDESK_CHECK_FILE"
+  run_cmd as_root python3 "$RUSTDESK_CHECK_FILE"
+  ok "rustdesk_udp_payload_check.py is ready: ${RUSTDESK_CHECK_FILE}"
+}
+
 validate_haproxy_config() {
   require_command haproxy
   run_cmd as_root haproxy -c -f "$CONFIG_FILE"
@@ -852,6 +881,7 @@ main() {
   create_self_signed_certificate
   enable_haproxy_service
   wait_for_manual_config_upload
+  deploy_rustdesk_udp_payload_check
   validate_haproxy_config
   start_and_check_haproxy
 

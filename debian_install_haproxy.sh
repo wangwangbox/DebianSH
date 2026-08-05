@@ -5,7 +5,7 @@
 set -Eeuo pipefail
 
 SCRIPT_NAME="$(basename "$0")"
-SCRIPT_VERSION="2026.08.06.1"
+SCRIPT_VERSION="2026.08.06.2"
 KEYRING_DIR="/usr/share/keyrings"
 KEYRING_FILE="${KEYRING_DIR}/haproxy-debian-net.gpg"
 KEY_URL="https://haproxy.debian.net/bernat.debian.org.gpg"
@@ -899,6 +899,11 @@ start_and_check_haproxy() {
   run_cmd as_root systemctl status haproxy --no-pager
 }
 
+print_haproxy_version() {
+  log "Current HAProxy version:"
+  run_cmd haproxy -v
+}
+
 main() {
   local selected_version
 
@@ -934,6 +939,7 @@ main() {
   deploy_rustdesk_udp_payload_check
   validate_haproxy_config
   start_and_check_haproxy
+  print_haproxy_version
 
   ok "HAProxy deployment completed successfully with ${SCRIPT_NAME} version ${SCRIPT_VERSION}."
 }

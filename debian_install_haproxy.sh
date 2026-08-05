@@ -5,7 +5,7 @@
 set -Eeuo pipefail
 
 SCRIPT_NAME="$(basename "$0")"
-SCRIPT_VERSION="2026.07.08.5"
+SCRIPT_VERSION="2026.08.06.1"
 KEYRING_DIR="/usr/share/keyrings"
 KEYRING_FILE="${KEYRING_DIR}/haproxy-debian-net.gpg"
 KEY_URL="https://haproxy.debian.net/bernat.debian.org.gpg"
@@ -477,7 +477,7 @@ install_haproxy() {
 
   log "Installing HAProxy version: ${selected_version}"
   unhold_haproxy_before_install
-  run_cmd as_root apt-get install -y "haproxy=${selected_version}"
+  run_cmd as_root apt-get install -y --reinstall "haproxy=${selected_version}"
   ok "HAProxy installed."
 }
 

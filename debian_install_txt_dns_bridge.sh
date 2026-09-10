@@ -289,11 +289,28 @@ prompt_domains() {
   done
 }
 
+prompt_key() {
+  local default_key=$1
+  local key
+
+  while true; do
+    key="$(prompt_text "Enter the repeating XOR decryption key for --key" "$default_key")"
+
+    if printf '%s\n' "$key" | grep -Eq '^[A-Za-z0-9_.-]+$'; then
+      printf '%s\n' "$key"
+      return 0
+    fi
+
+    warn "Invalid key. Use letters, numbers, dots, underscores, or hyphens."
+  done
+}
+
 write_service_file() {
   local domains=$1
-  local enable_logs=$2
-  local listen_addr=$3
-  local extra_listen_addr=$4
+  local key=$2
+  local enable_logs=$3
+  local listen_addr=$4
+  local extra_listen_addr=$5
   local tmp_service
 
   tmp_service="$(mktemp)"
@@ -307,7 +324,7 @@ write_service_file() {
     printf '%s\n' "Type=simple"
     printf '%s\n' "User=root"
     printf '%s\n' "WorkingDirectory=/root/txt-dns-bridge"
-    printf '%s\n' "ExecStart=/usr/bin/python3 /root/txt-dns-bridge/txt-dns-bridge.py --listen ${listen_addr} --listen-extra ${extra_listen_addr} --domains ${domains}"
+    printf '%s\n' "ExecStart=/usr/bin/python3 /root/txt-dns-bridge/txt-dns-bridge.py --listen ${listen_addr} --listen-extra ${extra_listen_addr} --domains ${domains} --key ${key}"
     printf '%s\n' "Restart=always"
     printf '%s\n' "RestartSec=10"
     if [ "$enable_logs" = "yes" ]; then
@@ -338,7 +355,7 @@ write_service_file() {
 start_and_check_service() {
   run_cmd as_root systemctl daemon-reload
   run_cmd as_root systemctl enable "$SERVICE_NAME"
-  run_cmd as_root systemctl start "$SERVICE_NAME"
+  run_cmd as_root systemctl restart "$SERVICE_NAME"
 
   if systemctl is-active --quiet "$SERVICE_NAME"; then
     ok "${SERVICE_NAME} is running."
@@ -352,6 +369,7 @@ start_and_check_service() {
 main() {
   local domains
   local extra_listen_addr
+  local key
   local listen_addr
   local log_choice
 
@@ -366,6 +384,7 @@ main() {
   download_bridge_script
   validate_bridge_script
   domains="$(prompt_domains)"
+  key="$(prompt_key "${domains%%,*}")"
 
   if prompt_yes_no "Fully open DNS listener to public network? This binds UDP/TCP 5353 and test port 8053 on 0.0.0.0." "n"; then
     listen_addr="0.0.0.0:5353"
@@ -382,7 +401,7 @@ main() {
     log_choice="no"
   fi
 
-  write_service_file "$domains" "$log_choice" "$listen_addr" "$extra_listen_addr"
+  write_service_file "$domains" "$key" "$log_choice" "$listen_addr" "$extra_listen_addr"
   start_and_check_service
 }
 

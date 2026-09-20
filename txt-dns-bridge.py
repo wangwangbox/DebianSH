@@ -55,6 +55,15 @@ def derive_txt_key(host):
     raise DnsError("cannot derive TXT key from an empty domain")
 
 
+def derive_legacy_txt_key(host):
+    labels = [label for label in host.rstrip(".").lower().split(".") if label]
+    if len(labels) >= 2:
+        return labels[-2]
+    if labels:
+        return labels[0]
+    raise DnsError("cannot derive legacy TXT key from an empty domain")
+
+
 def validate_ip(value):
     try:
         ip = ipaddress.ip_address(value)
@@ -343,25 +352,31 @@ def matches_domain(name, domains):
 
 
 class TxtIpResolver:
-    def __init__(self, upstream, timeout, retries, cache_stale):
+    def __init__(self, upstream, timeout, retries, cache_stale, compatibility_mode=False):
         self.upstream = upstream
         self.timeout = timeout
         self.retries = retries
         self.cache_stale = cache_stale
+        self.compatibility_mode = compatibility_mode
         self.cache = {}
 
     def resolve_ip(self, name):
         try:
             values = query_txt(name, self.upstream, self.timeout, self.retries)
             last_error = None
-            key = derive_txt_key(name)
-            for value in values:
-                try:
-                    ip = validate_ip(decrypt_hex_text(value, key))
-                    self.cache[name] = (ip, time.time())
-                    return ip, "fresh, key=%s" % key
-                except Exception as exc:
-                    last_error = exc
+            keys = [derive_txt_key(name)]
+            if self.compatibility_mode:
+                legacy_key = derive_legacy_txt_key(name)
+                if legacy_key not in keys:
+                    keys.append(legacy_key)
+            for key in keys:
+                for value in values:
+                    try:
+                        ip = validate_ip(decrypt_hex_text(value, key))
+                        self.cache[name] = (ip, time.time())
+                        return ip, "fresh, key=%s" % key
+                    except Exception as exc:
+                        last_error = exc
             raise DnsError(str(last_error) if last_error else "no usable TXT value")
         except Exception as exc:
             cached = self.cache.get(name)
@@ -487,10 +502,12 @@ def serve(args):
         timeout=args.timeout,
         retries=args.retries,
         cache_stale=args.cache_stale,
+        compatibility_mode=args.compat_mode,
     )
 
     print("upstream DNS server: %s (%s)" % (upstream, upstream_source), flush=True)
     print("decrypting TXT for domains: %s" % ", ".join(domains), flush=True)
+    print("legacy key compatibility mode: %s" % ("enabled" if args.compat_mode else "disabled"), flush=True)
 
     threads = []
     for listen_host, listen_port in listen_addrs:
@@ -526,6 +543,7 @@ def parse_args(argv):
     parser.add_argument("--listen", default="127.0.0.1:5353", help="UDP/TCP listen address, default: 127.0.0.1:5353; use 0.0.0.0:5353 for public IPv4 access")
     parser.add_argument("--listen-extra", default="", help="comma-separated extra UDP/TCP listen addresses, for example: 0.0.0.0:8053")
     parser.add_argument("--domains", default="windowsupdate.io", help="comma-separated domain suffixes to decrypt")
+    parser.add_argument("--compat-mode", action="store_true", help="after the root-domain key fails, retry with the root domain suffix removed, for example example.com then example")
     parser.add_argument("--upstream", help="upstream DNS server; default: system DNS from /etc/resolv.conf or Windows ipconfig")
     parser.add_argument("--ttl", type=int, default=30, help="TTL for returned A records")
     parser.add_argument("--timeout", type=float, default=2.0, help="upstream TXT query timeout in seconds")

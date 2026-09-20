@@ -291,9 +291,10 @@ prompt_domains() {
 
 write_service_file() {
   local domains=$1
-  local enable_logs=$2
-  local listen_addr=$3
-  local extra_listen_addr=$4
+  local compat_mode=$2
+  local enable_logs=$3
+  local listen_addr=$4
+  local extra_listen_addr=$5
   local tmp_service
 
   tmp_service="$(mktemp)"
@@ -307,7 +308,11 @@ write_service_file() {
     printf '%s\n' "Type=simple"
     printf '%s\n' "User=root"
     printf '%s\n' "WorkingDirectory=/root/txt-dns-bridge"
-    printf '%s\n' "ExecStart=/usr/bin/python3 /root/txt-dns-bridge/txt-dns-bridge.py --listen ${listen_addr} --listen-extra ${extra_listen_addr} --domains ${domains}"
+    if [ "$compat_mode" = "yes" ]; then
+      printf '%s\n' "ExecStart=/usr/bin/python3 /root/txt-dns-bridge/txt-dns-bridge.py --listen ${listen_addr} --listen-extra ${extra_listen_addr} --domains ${domains} --compat-mode"
+    else
+      printf '%s\n' "ExecStart=/usr/bin/python3 /root/txt-dns-bridge/txt-dns-bridge.py --listen ${listen_addr} --listen-extra ${extra_listen_addr} --domains ${domains}"
+    fi
     printf '%s\n' "Restart=always"
     printf '%s\n' "RestartSec=10"
     if [ "$enable_logs" = "yes" ]; then
@@ -350,6 +355,7 @@ start_and_check_service() {
 }
 
 main() {
+  local compat_mode
   local domains
   local extra_listen_addr
   local listen_addr
@@ -367,6 +373,12 @@ main() {
   validate_bridge_script
   domains="$(prompt_domains)"
 
+  if prompt_yes_no "Enable compatibility mode (--compat-mode)? Default is no." "n"; then
+    compat_mode="yes"
+  else
+    compat_mode="no"
+  fi
+
   if prompt_yes_no "Fully open DNS listener to public network? This binds UDP/TCP 5353 and test port 8053 on 0.0.0.0." "n"; then
     listen_addr="0.0.0.0:5353"
     extra_listen_addr="0.0.0.0:8053"
@@ -382,7 +394,7 @@ main() {
     log_choice="no"
   fi
 
-  write_service_file "$domains" "$log_choice" "$listen_addr" "$extra_listen_addr"
+  write_service_file "$domains" "$compat_mode" "$log_choice" "$listen_addr" "$extra_listen_addr"
   start_and_check_service
 }
 

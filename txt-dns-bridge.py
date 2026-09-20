@@ -3,7 +3,8 @@
 DNS proxy that can answer A/AAAA queries by reading encrypted IPs from TXT.
 
 The TXT value is expected to be a hex string. It is decrypted with repeating-key
-XOR using --key, decoded as UTF-8/ASCII text, and validated as an IP address.
+XOR using the queried host's root domain as the key, decoded as UTF-8/ASCII text,
+and validated as an IP address.
 """
 
 import argparse
@@ -43,6 +44,15 @@ def decrypt_hex_text(hex_text, key):
     encrypted = bytes.fromhex("".join(hex_text.split()))
     plain = xor_crypt(encrypted, key)
     return plain.decode("utf-8").strip().strip('"').strip()
+
+
+def derive_txt_key(host):
+    labels = [label for label in host.rstrip(".").lower().split(".") if label]
+    if len(labels) >= 2:
+        return ".".join(labels[-2:])
+    if labels:
+        return labels[0]
+    raise DnsError("cannot derive TXT key from an empty domain")
 
 
 def validate_ip(value):
@@ -333,9 +343,8 @@ def matches_domain(name, domains):
 
 
 class TxtIpResolver:
-    def __init__(self, upstream, key, timeout, retries, cache_stale):
+    def __init__(self, upstream, timeout, retries, cache_stale):
         self.upstream = upstream
-        self.key = key
         self.timeout = timeout
         self.retries = retries
         self.cache_stale = cache_stale
@@ -345,11 +354,12 @@ class TxtIpResolver:
         try:
             values = query_txt(name, self.upstream, self.timeout, self.retries)
             last_error = None
+            key = derive_txt_key(name)
             for value in values:
                 try:
-                    ip = validate_ip(decrypt_hex_text(value, self.key))
+                    ip = validate_ip(decrypt_hex_text(value, key))
                     self.cache[name] = (ip, time.time())
-                    return ip, "fresh"
+                    return ip, "fresh, key=%s" % key
                 except Exception as exc:
                     last_error = exc
             raise DnsError(str(last_error) if last_error else "no usable TXT value")
@@ -474,7 +484,6 @@ def serve(args):
     domains = [item.strip().rstrip(".").lower() for item in args.domains.split(",") if item.strip()]
     resolver = TxtIpResolver(
         upstream=upstream,
-        key=args.key,
         timeout=args.timeout,
         retries=args.retries,
         cache_stale=args.cache_stale,
@@ -518,19 +527,23 @@ def parse_args(argv):
     parser.add_argument("--listen-extra", default="", help="comma-separated extra UDP/TCP listen addresses, for example: 0.0.0.0:8053")
     parser.add_argument("--domains", default="windowsupdate.io", help="comma-separated domain suffixes to decrypt")
     parser.add_argument("--upstream", help="upstream DNS server; default: system DNS from /etc/resolv.conf or Windows ipconfig")
-    parser.add_argument("--key", default="windowsupdate", help="repeating XOR key")
     parser.add_argument("--ttl", type=int, default=30, help="TTL for returned A records")
     parser.add_argument("--timeout", type=float, default=2.0, help="upstream TXT query timeout in seconds")
     parser.add_argument("--retries", type=int, default=2, help="upstream DNS retry count after the first attempt")
     parser.add_argument("--cache-stale", type=int, default=3600, help="seconds to keep using last good IP after errors")
     parser.add_argument("--encrypt", help="print encrypted hex TXT value for this plaintext IP and exit")
-    return parser.parse_args(argv)
+    parser.add_argument("--encrypt-domain", help="domain used to derive the root-domain key for --encrypt")
+    args = parser.parse_args(argv)
+    if args.encrypt and not args.encrypt_domain:
+        parser.error("--encrypt-domain is required when --encrypt is used")
+    return args
 
 
 def main(argv):
     args = parse_args(argv)
     if args.encrypt:
-        print(encrypt_text(validate_ip(args.encrypt), args.key))
+        key = derive_txt_key(args.encrypt_domain)
+        print(encrypt_text(validate_ip(args.encrypt), key))
         return 0
     serve(args)
     return 0
